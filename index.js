@@ -6,6 +6,68 @@ require('dotenv').config();
 
 const app = express();
 
+// =======================
+// ✅ 台灣時區工具（不需套件）
+// =======================
+const TZ = 'Asia/Taipei';
+
+// 取得台灣今天 YYYY-MM-DD
+function todayTW() {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).formatToParts(new Date());
+  const y = parts.find(p => p.type === 'year').value;
+  const m = parts.find(p => p.type === 'month').value;
+  const d = parts.find(p => p.type === 'day').value;
+  return `${y}-${m}-${d}`; // e.g. 2026-02-05
+}
+
+// 給 YYYY-MM-DD 產生台灣當天起迄（可直接用來查 timestamptz）
+function dayRangeTW(dateStrYYYYMMDD) {
+  return {
+    start: `${dateStrYYYYMMDD}T00:00:00+08:00`,
+    end: `${dateStrYYYYMMDD}T23:59:59+08:00`,
+  };
+}
+
+function formatTimeTW(isoOrDate, withSeconds = true) {
+  return new Date(isoOrDate).toLocaleTimeString('zh-TW', {
+    timeZone: TZ,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: withSeconds ? '2-digit' : undefined,
+    hour12: false,
+  });
+}
+
+function formatDateTW(isoOrDate) {
+  return new Date(isoOrDate).toLocaleDateString('zh-TW', {
+    timeZone: TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+}
+
+// 取得「本月」台灣起迄（YYYY-MM-DDT...+08:00）
+function monthRangeTW() {
+  // 先拿到台灣目前的年/月
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).formatToParts(new Date());
+  const y = parseInt(parts.find(p => p.type === 'year').value, 10);
+  const m = parseInt(parts.find(p => p.type === 'month').value, 10); // 1~12
+
+  // 本月第一天
+  const mm = String(m).padStart(2, '0');
+  const firstDate = `${y}-${mm}-01`;
+
+  // 本月最後一天：用 UTC 計算「該月天數」不受伺服器時區影響
+  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate(); // m 這裡是 1~12，Date.UTC 的 month 是 0~11，所以用 y,m,0 表示「下個月第0天」= 本月最後一天
+  const lastDate = `${y}-${mm}-${String(daysInMonth).padStart(2, '0')}`;
+
+  return {
+    start: `${firstDate}T00:00:00+08:00`,
+    end: `${lastDate}T23:59:59+08:00`,
+  };
+}
+
 // LINE Bot 設定
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -74,8 +136,7 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 function isWithinCompanyLocation(latitude, longitude) {
   let closestLocation = null;
   let minDistance = Infinity;
-  
-  // 檢查所有地點，找出最近的
+
   for (const location of COMPANY_LOCATIONS) {
     const distance = calculateDistance(
       location.lat,
@@ -83,15 +144,15 @@ function isWithinCompanyLocation(latitude, longitude) {
       latitude,
       longitude
     );
-    
+
     if (distance < minDistance) {
       minDistance = distance;
       closestLocation = location;
     }
   }
-  
+
   const isValid = minDistance <= closestLocation.radiusMeters;
-  
+
   return {
     valid: isValid,
     distance: Math.round(minDistance),
@@ -105,7 +166,7 @@ async function handleAttendance(userId, userName, type, latitude, longitude) {
   try {
     // 驗證 GPS
     const locationCheck = isWithinCompanyLocation(latitude, longitude);
-    
+
     if (!locationCheck.valid) {
       return {
         success: false,
@@ -113,22 +174,21 @@ async function handleAttendance(userId, userName, type, latitude, longitude) {
       };
     }
 
-    // 檢查今天是否已經有相同類型的打卡記錄
-    const today = new Date().toISOString().split('T')[0];
+    // ✅ 用台灣「今天」的日界線查詢是否重複打卡
+    const today = todayTW();
+    const { start, end } = dayRangeTW(today);
+
     const { data: existingRecord } = await supabase
       .from('attendance')
       .select('*')
       .eq('user_id', userId)
       .eq('type', type)
-      .gte('created_at', `${today}T00:00:00`)
-      .lte('created_at', `${today}T23:59:59`)
+      .gte('created_at', start)
+      .lte('created_at', end)
       .single();
 
     if (existingRecord) {
-      const time = new Date(existingRecord.created_at).toLocaleTimeString('zh-TW', {
-        hour: '2-digit',
-        minute: '2-digit'
-      });
+      const time = formatTimeTW(existingRecord.created_at, false); // HH:mm
       return {
         success: false,
         message: `⚠️ 您今天已經${type === 'clock_in' ? '上班' : '下班'}打卡了\n\n打卡時間: ${time}\n打卡地點: ${existingRecord.location_name || '未記錄'}`
@@ -136,14 +196,13 @@ async function handleAttendance(userId, userName, type, latitude, longitude) {
     }
 
     // 先確保使用者存在
-    const { data: user, error: userError } = await supabase
+    const { data: user } = await supabase
       .from('users')
       .select('*')
       .eq('line_user_id', userId)
       .single();
 
     if (!user) {
-      // 新增使用者
       await supabase
         .from('users')
         .insert([
@@ -174,11 +233,8 @@ async function handleAttendance(userId, userName, type, latitude, longitude) {
 
     if (error) throw error;
 
-    const time = new Date(data.created_at).toLocaleTimeString('zh-TW', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
+    // ✅ 顯示台灣時間
+    const time = formatTimeTW(data.created_at, true); // HH:mm:ss
 
     return {
       success: true,
@@ -197,9 +253,8 @@ async function handleAttendance(userId, userName, type, latitude, longitude) {
 // 查詢本月出勤記錄
 async function getMonthlyAttendance(userId) {
   try {
-    const now = new Date();
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString();
+    // ✅ 用台灣本月起迄
+    const { start: firstDay, end: lastDay } = monthRangeTW();
 
     const { data, error } = await supabase
       .from('attendance')
@@ -215,14 +270,16 @@ async function getMonthlyAttendance(userId) {
       return '📊 本月尚無出勤記錄';
     }
 
-    // 按日期分組
+    // 按日期分組（台灣日期）
     const grouped = {};
     data.forEach(record => {
-      const date = new Date(record.created_at).toLocaleDateString('zh-TW');
+      const date = formatDateTW(record.created_at);
       if (!grouped[date]) grouped[date] = {};
       grouped[date][record.type] = new Date(record.created_at).toLocaleTimeString('zh-TW', {
+        timeZone: TZ,
         hour: '2-digit',
-        minute: '2-digit'
+        minute: '2-digit',
+        hour12: false,
       });
     });
 
@@ -250,19 +307,18 @@ async function getMonthlyAttendance(userId) {
 app.post('/webhook', line.middleware(lineConfig), async (req, res) => {
   try {
     const events = req.body.events;
-    
+
     await Promise.all(events.map(async (event) => {
       if (event.type === 'message') {
         const { userId } = event.source;
-        
+
         // 取得使用者資料
         const profile = await client.getProfile(userId);
-        
+
         if (event.message.type === 'text') {
           const text = event.message.text.trim();
           let replyMessage = '';
 
-          // 處理指令
           if (text === '上班' || text === '打卡' || text.toLowerCase() === 'clock in') {
             replyMessage = '請分享您的位置以完成上班打卡\n\n👇 點選下方「+」→「位置資訊」';
           } else if (text === '下班' || text.toLowerCase() === 'clock out') {
@@ -284,22 +340,23 @@ app.post('/webhook', line.middleware(lineConfig), async (req, res) => {
           });
 
         } else if (event.message.type === 'location') {
-          // 處理位置資訊
           const { latitude, longitude } = event.message;
-          
-          // 判斷是上班還是下班（從最近一則訊息判斷）
-          // 這裡簡化處理：如果今天還沒上班打卡，就是上班；否則是下班
-          const today = new Date().toISOString().split('T')[0];
+
+          // ✅ 用台灣「今天」判斷今天是否已 clock_in，來決定這次是上班或下班
+          const today = todayTW();
+          const { start, end } = dayRangeTW(today);
+
           const { data: todayClockIn } = await supabase
             .from('attendance')
             .select('*')
             .eq('user_id', userId)
             .eq('type', 'clock_in')
-            .gte('created_at', `${today}T00:00:00`)
-            .lte('created_at', `${today}T23:59:59`)
+            .gte('created_at', start)
+            .lte('created_at', end)
             .single();
 
           const type = todayClockIn ? 'clock_out' : 'clock_in';
+
           const result = await handleAttendance(
             userId,
             profile.displayName,
@@ -314,10 +371,9 @@ app.post('/webhook', line.middleware(lineConfig), async (req, res) => {
           });
         }
       } else if (event.type === 'follow') {
-        // 新使用者加入
         const { userId } = event.source;
         const profile = await client.getProfile(userId);
-        
+
         await supabase
           .from('users')
           .insert([
@@ -365,7 +421,7 @@ app.get('/api/users', async (req, res) => {
 app.get('/api/attendance', async (req, res) => {
   try {
     const { startDate, endDate, userId } = req.query;
-    
+
     let query = supabase
       .from('attendance')
       .select('*')
@@ -386,7 +442,12 @@ app.get('/api/attendance', async (req, res) => {
 
 // 健康檢查
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  // timestamp 仍用 ISO(UTC) 方便監控；你若想顯示台灣時間也可以一起回傳
+  res.json({
+    status: 'ok',
+    timestamp_utc: new Date().toISOString(),
+    timestamp_tw: new Date().toLocaleString('zh-TW', { timeZone: TZ })
+  });
 });
 
 const PORT = process.env.PORT || 3000;
