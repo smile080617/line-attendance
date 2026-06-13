@@ -209,12 +209,42 @@ async function handleAttendance(userId, userName, type, latitude, longitude) {
   }
 }
 
-// 查詢本月出勤記錄
-async function getMonthlyAttendance(userId) {
+// 把長訊息依 LINE 單則上限切成多則（保險起見設 4500 字，LINE 上限約 5000）
+function splitMessage(text, maxLen = 4500) {
+  if (text.length <= maxLen) return [text];
+  const lines = text.split('\n');
+  const chunks = [];
+  let current = '';
+  for (const line of lines) {
+    // 加上這一行後若超過上限，先把目前累積的存起來
+    if ((current + line + '\n').length > maxLen && current.length > 0) {
+      chunks.push(current.trimEnd());
+      current = '';
+    }
+    current += line + '\n';
+  }
+  if (current.trim().length > 0) chunks.push(current.trimEnd());
+  return chunks;
+}
+
+// 查詢出勤記錄
+// year, month(1-12) 指定要查的月份。不傳則預設本月。
+// 回傳「字串陣列」，每個元素是一則要送出的訊息（整月可能超過 LINE 單則上限需分段）
+async function getMonthlyAttendance(userId, year, month) {
   try {
     const now = new Date();
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString();
+    // 沒指定就用本月
+    const y = (typeof year === 'number') ? year : now.getFullYear();
+    const m = (typeof month === 'number') ? month : (now.getMonth() + 1); // 1-12
+
+    // 該月第一天與最後一天（month-1 因為 JS 月份從 0 起算）
+    const firstDay = new Date(y, m - 1, 1).toISOString();
+    const lastDay = new Date(y, m, 0, 23, 59, 59).toISOString();
+
+    const monthLabel = `${y}年${m}月`;
+    // 判斷是不是本月
+    const isCurrentMonth = (y === now.getFullYear() && m === now.getMonth() + 1);
+    const periodText = isCurrentMonth ? '本月' : '';
 
     const { data, error } = await supabase
       .from('attendance')
@@ -222,43 +252,84 @@ async function getMonthlyAttendance(userId) {
       .eq('user_id', userId)
       .gte('created_at', firstDay)
       .lte('created_at', lastDay)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: true });
 
     if (error) throw error;
 
+    const title = periodText ? `${monthLabel}（${periodText}）` : monthLabel;
+
     if (!data || data.length === 0) {
-      return '📊 本月尚無出勤記錄';
+      return [`📊 ${title}尚無出勤記錄`];
     }
 
-    // 按日期分組
+    // 按日期分組，每天可以有多筆上班/下班記錄（資料已由舊到新排序）
     const grouped = {};
     data.forEach(record => {
       const date = new Date(record.created_at).toLocaleDateString('zh-TW');
-      if (!grouped[date]) grouped[date] = {};
-      grouped[date][record.type] = new Date(record.created_at).toLocaleTimeString('zh-TW', {
-        hour: '2-digit',
-        minute: '2-digit'
+      if (!grouped[date]) grouped[date] = [];
+      grouped[date].push({
+        type: record.type,
+        time: new Date(record.created_at).toLocaleTimeString('zh-TW', {
+          hour: '2-digit',
+          minute: '2-digit'
+        }),
+        location: record.location_name || ''
       });
     });
 
-    let message = '📊 本月出勤記錄\n\n';
-    Object.keys(grouped).slice(0, 10).forEach(date => {
+    const dates = Object.keys(grouped);
+    let message = `📊 ${title}出勤記錄\n（共 ${dates.length} 天）\n\n`;
+    dates.forEach(date => {
       message += `${date}\n`;
-      if (grouped[date].clock_in) message += `  上班: ${grouped[date].clock_in}\n`;
-      if (grouped[date].clock_out) message += `  下班: ${grouped[date].clock_out}\n`;
+      grouped[date].forEach(rec => {
+        const typeText = rec.type === 'clock_in' ? '上班' : '下班';
+        const locationText = rec.location ? `（${rec.location}）` : '';
+        message += `  ${typeText}: ${rec.time}${locationText}\n`;
+      });
       message += '\n';
     });
 
-    if (Object.keys(grouped).length > 10) {
-      message += `... 還有 ${Object.keys(grouped).length - 10} 天記錄\n`;
+    // 整月內容可能很長，分段送出
+    const parts = splitMessage(message.trimEnd());
+    // LINE replyMessage 一次最多 5 則，超過則保留前 4 則並附提示
+    if (parts.length > 5) {
+      const kept = parts.slice(0, 4);
+      kept.push('⚠️ 本月記錄過多，僅顯示部分。\n如需完整資料，請聯繫管理員從後台匯出。');
+      return kept;
     }
-
-    return message;
+    return parts;
 
   } catch (error) {
     console.error('查詢錯誤:', error);
-    return '❌ 查詢失敗，請稍後再試';
+    return ['❌ 查詢失敗，請稍後再試'];
   }
+}
+
+// 產生「選擇月份」的 Quick Reply 按鈕（過去 12 個月）
+function buildMonthPickerMessage() {
+  const now = new Date();
+  const items = [];
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const y = d.getFullYear();
+    const m = d.getMonth() + 1;
+    // label 最多 20 字；postback 用 data 帶回年月
+    const label = i === 0 ? `${m}月(本月)` : `${y}/${m}`;
+    items.push({
+      type: 'action',
+      action: {
+        type: 'postback',
+        label: label,
+        data: `query_month=${y}-${m}`,
+        displayText: `查詢 ${y}年${m}月`
+      }
+    });
+  }
+  return {
+    type: 'text',
+    text: '請選擇要查詢的月份（可查過去一年）👇',
+    quickReply: { items }
+  };
 }
 
 // LINE Webhook
@@ -275,28 +346,40 @@ app.post('/webhook', line.middleware(lineConfig), async (req, res) => {
         
         if (event.message.type === 'text') {
           const text = event.message.text.trim();
-          let replyMessage = '';
 
           // 處理指令
           if (text === '上班' || text === '打卡' || text.toLowerCase() === 'clock in') {
-            replyMessage = '請分享您的位置以完成上班打卡\n\n👇 點選下方「+」→「位置資訊」';
+            await client.replyMessage(event.replyToken, {
+              type: 'text',
+              text: '請分享您的位置以完成上班打卡\n\n👇 點選下方「+」→「位置資訊」'
+            });
           } else if (text === '下班' || text.toLowerCase() === 'clock out') {
-            replyMessage = '請分享您的位置以完成下班打卡\n\n👇 點選下方「+」→「位置資訊」';
-          } else if (text === '查詢' || text === '本月出勤' || text === '記錄') {
-            replyMessage = await getMonthlyAttendance(userId);
+            await client.replyMessage(event.replyToken, {
+              type: 'text',
+              text: '請分享您的位置以完成下班打卡\n\n👇 點選下方「+」→「位置資訊」'
+            });
+          } else if (text === '查詢' || text === '本月出勤' || text === '記錄' || text === '本月') {
+            const messages = await getMonthlyAttendance(userId);
+            await client.replyMessage(event.replyToken,
+              messages.map(t => ({ type: 'text', text: t }))
+            );
+          } else if (text === '選擇月份' || text === '月份' || text === '其他月份' || text === '歷史查詢') {
+            await client.replyMessage(event.replyToken, buildMonthPickerMessage());
           } else if (text === '幫助' || text === '說明' || text === '?') {
-            replyMessage = `📱 LINE 打卡系統使用說明\n\n` +
-              `上班打卡:\n1. 傳送「上班」\n2. 分享位置資訊\n\n` +
-              `下班打卡:\n1. 傳送「下班」\n2. 分享位置資訊\n\n` +
-              `其他指令:\n• 「查詢」- 查看本月出勤\n• 「幫助」- 顯示此說明`;
+            await client.replyMessage(event.replyToken, {
+              type: 'text',
+              text: `📱 LINE 打卡系統使用說明\n\n` +
+                `上班打卡:\n1. 傳送「上班」\n2. 分享位置資訊\n\n` +
+                `下班打卡:\n1. 傳送「下班」\n2. 分享位置資訊\n\n` +
+                `查詢記錄:\n• 「查詢」- 查看本月完整出勤\n• 「選擇月份」- 查詢過去一年任一月份\n\n` +
+                `其他指令:\n• 「幫助」- 顯示此說明`
+            });
           } else {
-            replyMessage = '❓ 不認識的指令\n\n請傳送「幫助」查看使用說明';
+            await client.replyMessage(event.replyToken, {
+              type: 'text',
+              text: '❓ 不認識的指令\n\n請傳送「幫助」查看使用說明'
+            });
           }
-
-          await client.replyMessage(event.replyToken, {
-            type: 'text',
-            text: replyMessage
-          });
 
         } else if (event.message.type === 'location') {
           // 處理位置資訊
@@ -327,6 +410,20 @@ app.post('/webhook', line.middleware(lineConfig), async (req, res) => {
             type: 'text',
             text: result.message
           });
+        }
+      } else if (event.type === 'postback') {
+        // 處理選擇月份按鈕
+        const { userId } = event.source;
+        const data = event.postback.data || '';
+        const match = data.match(/^query_month=(\d{4})-(\d{1,2})$/);
+
+        if (match) {
+          const year = parseInt(match[1], 10);
+          const month = parseInt(match[2], 10);
+          const messages = await getMonthlyAttendance(userId, year, month);
+          await client.replyMessage(event.replyToken,
+            messages.map(t => ({ type: 'text', text: t }))
+          );
         }
       } else if (event.type === 'follow') {
         // 新使用者加入
