@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>打卡系統管理後台</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei", Arial, sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    header {
+      background: white;
+      padding: 20px 30px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      color: #333;
+      font-size: 24px;
+    }
+
+    .filters {
+      background: white;
+      padding: 20px 30px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+
+    .filter-row {
+      display: flex;
+      gap: 15px;
+      flex-wrap: wrap;
+      align-items: end;
+    }
+
+    .filter-group {
+      flex: 1;
+      min-width: 200px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+      color: #666;
+      font-size: 14px;
+    }
+
+    input, select, button {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      font-size: 14px;
+    }
+
+    button {
+      background: #06c755;
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    button:hover {
+      background: #05b04b;
+    }
+
+    .export-btn {
+      background: #0084ff;
+    }
+
+    .export-btn:hover {
+      background: #006dd9;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+
+    .stat-label {
+      color: #666;
+      font-size: 14px;
+      margin-bottom: 5px;
+    }
+
+    .stat-value {
+      color: #333;
+      font-size: 28px;
+      font-weight: bold;
+    }
+
+    .table-container {
+      background: white;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    thead {
+      background: #f8f9fa;
+    }
+
+    th {
+      padding: 15px;
+      text-align: left;
+      font-weight: 600;
+      color: #333;
+      border-bottom: 2px solid #dee2e6;
+    }
+
+    td {
+      padding: 15px;
+      border-bottom: 1px solid #dee2e6;
+    }
+
+    tr:hover {
+      background: #f8f9fa;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    .badge-in {
+      background: #d4edda;
+      color: #155724;
+    }
+
+    .badge-out {
+      background: #fff3cd;
+      color: #856404;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #666;
+    }
+
+    .no-data {
+      text-align: center;
+      padding: 40px;
+      color: #999;
+    }
+
+    .map-link {
+      color: #0084ff;
+      text-decoration: none;
+      font-size: 12px;
+    }
+
+    .map-link:hover {
+      text-decoration: underline;
+    }
+
+    @media (max-width: 768px) {
+      .filter-row {
+        flex-direction: column;
+      }
+
+      .filter-group {
+        width: 100%;
+      }
+
+      table {
+        font-size: 12px;
+      }
+
+      th, td {
+        padding: 10px 5px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>📊 LINE 打卡系統管理後台</h1>
+    </header>
+
+    <div class="filters">
+      <div class="filter-row">
+        <div class="filter-group">
+          <label>開始日期</label>
+          <input type="date" id="startDate">
+        </div>
+        <div class="filter-group">
+          <label>結束日期</label>
+          <input type="date" id="endDate">
+        </div>
+        <div class="filter-group">
+          <label>員工</label>
+          <select id="userFilter">
+            <option value="">全部員工</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>&nbsp;</label>
+          <button onclick="loadAttendance()">🔍 查詢</button>
+        </div>
+        <div class="filter-group">
+          <label>&nbsp;</label>
+          <button class="export-btn" onclick="exportToExcel()">📥 匯出 Excel</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">今日打卡人數</div>
+        <div class="stat-value" id="todayCount">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">本月總打卡次數</div>
+        <div class="stat-value" id="monthCount">-</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">員工總數</div>
+        <div class="stat-value" id="userCount">-</div>
+      </div>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>日期時間</th>
+            <th>員工姓名</th>
+            <th>類型</th>
+            <th>地點</th>
+            <th>距離</th>
+            <th>位置</th>
+          </tr>
+        </thead>
+        <tbody id="attendanceTable">
+          <tr><td colspan="6" class="loading">載入中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    // 設定 API 網址（請修改為你的實際網址）
+    const API_URL = window.location.hostname === 'localhost' 
+      ? 'http://localhost:3000' 
+      : 'https://你的伺服器網址.com';
+
+    let allAttendance = [];
+    let allUsers = [];
+
+    // 初始化
+    async function init() {
+      // 設定預設日期為本月
+      const now = new Date();
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      
+      document.getElementById('startDate').value = firstDay.toISOString().split('T')[0];
+      document.getElementById('endDate').value = lastDay.toISOString().split('T')[0];
+
+      await loadUsers();
+      await loadAttendance();
+      updateStats();
+    }
+
+    // 載入員工列表
+    async function loadUsers() {
+      try {
+        const response = await fetch(`${API_URL}/api/users`);
+        allUsers = await response.json();
+        
+        const select = document.getElementById('userFilter');
+        select.innerHTML = '<option value="">全部員工</option>';
+        
+        allUsers.forEach(user => {
+          const option = document.createElement('option');
+          option.value = user.line_user_id;
+          option.textContent = user.name;
+          select.appendChild(option);
+        });
+      } catch (error) {
+        console.error('載入員工失敗:', error);
+      }
+    }
+
+    // 載入出勤記錄
+    async function loadAttendance() {
+      const startDate = document.getElementById('startDate').value;
+      const endDate = document.getElementById('endDate').value;
+      const userId = document.getElementById('userFilter').value;
+
+      let url = `${API_URL}/api/attendance?`;
+      if (startDate) url += `startDate=${startDate}T00:00:00&`;
+      if (endDate) url += `endDate=${endDate}T23:59:59&`;
+      if (userId) url += `userId=${userId}&`;
+
+      try {
+        const response = await fetch(url);
+        allAttendance = await response.json();
+        renderTable(allAttendance);
+        updateStats();
+      } catch (error) {
+        console.error('載入出勤記錄失敗:', error);
+        document.getElementById('attendanceTable').innerHTML = 
+          '<tr><td colspan="5" class="no-data">載入失敗，請檢查伺服器連線</td></tr>';
+      }
+    }
+
+    // 渲染表格
+    function renderTable(data) {
+      const tbody = document.getElementById('attendanceTable');
+      
+      if (data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="no-data">無打卡記錄</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = data.map(record => {
+        const date = new Date(record.created_at);
+        const dateStr = date.toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei' });
+        const timeStr = date.toLocaleTimeString('zh-TW', { 
+          timeZone: 'Asia/Taipei',
+          hour: '2-digit', 
+          minute: '2-digit',
+          second: '2-digit'
+        });
+        
+        const typeText = record.type === 'clock_in' ? '上班' : '下班';
+        const badgeClass = record.type === 'clock_in' ? 'badge-in' : 'badge-out';
+        
+        const mapUrl = `https://www.google.com/maps?q=${record.latitude},${record.longitude}`;
+        const locationName = record.location_name || '未記錄';
+        
+        return `
+          <tr>
+            <td>${dateStr} ${timeStr}</td>
+            <td>${record.user_name}</td>
+            <td><span class="badge ${badgeClass}">${typeText}</span></td>
+            <td>${locationName}</td>
+            <td>${record.distance_from_company} 公尺</td>
+            <td><a href="${mapUrl}" target="_blank" class="map-link">📍 查看地圖</a></td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // 更新統計資料
+    function updateStats() {
+      const now = new Date();
+      const today = now.toISOString().split('T')[0];
+      
+      // 今日打卡人數
+      const todayRecords = allAttendance.filter(r => 
+        r.created_at.startsWith(today)
+      );
+      const todayUsers = new Set(todayRecords.map(r => r.user_id));
+      document.getElementById('todayCount').textContent = todayUsers.size;
+
+      // 本月總打卡次數
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+      const monthRecords = allAttendance.filter(r => r.created_at >= firstDay);
+      document.getElementById('monthCount').textContent = monthRecords.length;
+
+      // 員工總數
+      document.getElementById('userCount').textContent = allUsers.length;
+    }
+
+    // 匯出 Excel
+    function exportToExcel() {
+      if (allAttendance.length === 0) {
+        alert('無資料可匯出');
+        return;
+      }
+
+      let csv = '\uFEFF'; // UTF-8 BOM
+      csv += '日期,時間,員工姓名,類型,地點,距離(公尺),緯度,經度\n';
+
+      allAttendance.forEach(record => {
+        const date = new Date(record.created_at);
+        const dateStr = date.toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei' });
+        const timeStr = date.toLocaleTimeString('zh-TW', { timeZone: 'Asia/Taipei' });
+        const typeText = record.type === 'clock_in' ? '上班' : '下班';
+        const locationName = record.location_name || '未記錄';
+
+        csv += `${dateStr},${timeStr},${record.user_name},${typeText},${locationName},${record.distance_from_company},${record.latitude},${record.longitude}\n`;
+      });
+
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      
+      link.setAttribute('href', url);
+      link.setAttribute('download', `出勤記錄_${new Date().toISOString().split('T')[0]}.csv`);
+      link.style.visibility = 'hidden';
+      
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    // 頁面載入時初始化
+    window.onload = init;
+  </script>
+</body>
+</html>

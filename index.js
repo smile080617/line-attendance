@@ -20,6 +20,50 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+// ===== 台灣時區處理 =====
+// 台灣固定為 UTC+8，且不實施日光節約時間，所以用固定位移即可
+const TW_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+// 取得「現在」的台灣日曆時間（年月日時分）
+function taiwanNowParts() {
+  const tw = new Date(Date.now() + TW_OFFSET_MS);
+  return {
+    y: tw.getUTCFullYear(),
+    mo: tw.getUTCMonth() + 1, // 1-12
+    d: tw.getUTCDate(),
+    hh: tw.getUTCHours(),
+    mm: tw.getUTCMinutes()
+  };
+}
+
+// 把「台灣的某個年月日時分」轉成 UTC ISO 字串（存DB或查詢比較用）
+function taiwanToUTC(y, mo, d, hh = 0, mm = 0, ss = 0, ms = 0) {
+  return new Date(Date.UTC(y, mo - 1, d, hh, mm, ss, ms) - TW_OFFSET_MS).toISOString();
+}
+
+// 取得台灣「某一天」的起訖時間（回傳 UTC ISO，給資料庫查詢用）
+function taiwanDayRangeISO(y, mo, d) {
+  return {
+    startISO: taiwanToUTC(y, mo, d, 0, 0, 0, 0),
+    endISO: taiwanToUTC(y, mo, d, 23, 59, 59, 999)
+  };
+}
+
+// ===== 台灣時區的顯示格式 =====
+function fmtTWDate(dateInput) {
+  return new Date(dateInput).toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei' });
+}
+function fmtTWTime(dateInput) {
+  return new Date(dateInput).toLocaleTimeString('zh-TW', {
+    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit'
+  });
+}
+function fmtTWTimeSec(dateInput) {
+  return new Date(dateInput).toLocaleTimeString('zh-TW', {
+    timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+
 // 公司位置設定 - 支援多個地點
 const COMPANY_LOCATIONS = [
   {
@@ -189,11 +233,7 @@ async function handleAttendance(userId, userName, type, latitude, longitude) {
 
     if (error) throw error;
 
-    const time = new Date(data.created_at).toLocaleTimeString('zh-TW', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
+    const time = fmtTWTimeSec(data.created_at);
 
     return {
       success: true,
@@ -232,18 +272,20 @@ function splitMessage(text, maxLen = 4500) {
 // 回傳「字串陣列」，每個元素是一則要送出的訊息（整月可能超過 LINE 單則上限需分段）
 async function getMonthlyAttendance(userId, year, month) {
   try {
-    const now = new Date();
-    // 沒指定就用本月
-    const y = (typeof year === 'number') ? year : now.getFullYear();
-    const m = (typeof month === 'number') ? month : (now.getMonth() + 1); // 1-12
+    const twNow = taiwanNowParts();
+    // 沒指定就用台灣的本月
+    const y = (typeof year === 'number') ? year : twNow.y;
+    const m = (typeof month === 'number') ? month : twNow.mo; // 1-12
 
-    // 該月第一天與最後一天（month-1 因為 JS 月份從 0 起算）
-    const firstDay = new Date(y, m - 1, 1).toISOString();
-    const lastDay = new Date(y, m, 0, 23, 59, 59).toISOString();
+    // 該月在台灣時區的第一天 00:00 與最後一天 23:59:59（轉成 UTC 給DB查詢）
+    const firstDay = taiwanToUTC(y, m, 1, 0, 0, 0, 0);
+    // 下個月的第 0 天 = 這個月最後一天
+    const lastDayDate = new Date(Date.UTC(y, m, 0)).getUTCDate(); // 該月天數
+    const lastDay = taiwanToUTC(y, m, lastDayDate, 23, 59, 59, 999);
 
     const monthLabel = `${y}年${m}月`;
-    // 判斷是不是本月
-    const isCurrentMonth = (y === now.getFullYear() && m === now.getMonth() + 1);
+    // 判斷是不是台灣的本月
+    const isCurrentMonth = (y === twNow.y && m === twNow.mo);
     const periodText = isCurrentMonth ? '本月' : '';
 
     const { data, error } = await supabase
@@ -265,14 +307,11 @@ async function getMonthlyAttendance(userId, year, month) {
     // 按日期分組，每天可以有多筆上班/下班記錄（資料已由舊到新排序）
     const grouped = {};
     data.forEach(record => {
-      const date = new Date(record.created_at).toLocaleDateString('zh-TW');
+      const date = fmtTWDate(record.created_at);
       if (!grouped[date]) grouped[date] = [];
       grouped[date].push({
         type: record.type,
-        time: new Date(record.created_at).toLocaleTimeString('zh-TW', {
-          hour: '2-digit',
-          minute: '2-digit'
-        }),
+        time: fmtTWTime(record.created_at),
         location: record.location_name || ''
       });
     });
@@ -307,12 +346,13 @@ async function getMonthlyAttendance(userId, year, month) {
 
 // 產生「選擇月份」的 Quick Reply 按鈕（過去 12 個月）
 function buildMonthPickerMessage() {
-  const now = new Date();
+  const twNow = taiwanNowParts();
   const items = [];
   for (let i = 0; i < 12; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const y = d.getFullYear();
-    const m = d.getMonth() + 1;
+    // 從台灣的本月往前推 i 個月
+    const d = new Date(Date.UTC(twNow.y, (twNow.mo - 1) - i, 1));
+    const y = d.getUTCFullYear();
+    const m = d.getUTCMonth() + 1;
     // label 最多 20 字；postback 用 data 帶回年月
     const label = i === 0 ? `${m}月(本月)` : `${y}/${m}`;
     items.push({
@@ -384,20 +424,25 @@ app.post('/webhook', line.middleware(lineConfig), async (req, res) => {
         } else if (event.message.type === 'location') {
           // 處理位置資訊
           const { latitude, longitude } = event.message;
-          
-          // 判斷是上班還是下班（從最近一則訊息判斷）
-          // 這裡簡化處理：如果今天還沒上班打卡，就是上班；否則是下班
-          const today = new Date().toISOString().split('T')[0];
-          const { data: todayClockIn } = await supabase
+
+          // 用台灣時區判斷「今天」的範圍
+          const tw = taiwanNowParts();
+          const { startISO, endISO } = taiwanDayRangeISO(tw.y, tw.mo, tw.d);
+
+          // 取得今天最後一筆打卡，依此決定這次是上班還是下班
+          // 規則：最後一筆是上班 → 這次是下班；否則（最後是下班 / 今天還沒打）→ 這次是上班
+          const { data: todayPunches } = await supabase
             .from('attendance')
             .select('*')
             .eq('user_id', userId)
-            .eq('type', 'clock_in')
-            .gte('created_at', `${today}T00:00:00`)
-            .lte('created_at', `${today}T23:59:59`)
-            .single();
+            .gte('created_at', startISO)
+            .lte('created_at', endISO)
+            .order('created_at', { ascending: false })
+            .limit(1);
 
-          const type = todayClockIn ? 'clock_out' : 'clock_in';
+          const lastPunch = (todayPunches && todayPunches.length > 0) ? todayPunches[0] : null;
+          const type = (lastPunch && lastPunch.type === 'clock_in') ? 'clock_out' : 'clock_in';
+
           const result = await handleAttendance(
             userId,
             profile.displayName,
@@ -499,6 +544,82 @@ app.get('/api/attendance', async (req, res) => {
 // 健康檢查
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// ===== 自動補下班 =====
+// 給外部排程服務（如 cron-job.org）每天台灣時間 23:59 呼叫一次
+// 找出今天最後一筆是「上班」的員工，自動補一筆下班（時間記為當天 23:59）
+// 用 ?token=xxx 簡單保護，需與環境變數 CRON_SECRET 相符（若未設定則不檢查）
+app.get('/cron/auto-clockout', async (req, res) => {
+  try {
+    const secret = process.env.CRON_SECRET;
+    if (secret && req.query.token !== secret) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
+    // 台灣的今天
+    const tw = taiwanNowParts();
+    const { startISO, endISO } = taiwanDayRangeISO(tw.y, tw.mo, tw.d);
+    // 自動下班的時間記為今天台灣 23:59:00
+    const autoClockOutISO = taiwanToUTC(tw.y, tw.mo, tw.d, 23, 59, 0, 0);
+
+    // 取出今天所有打卡，依時間排序
+    const { data: punches, error } = await supabase
+      .from('attendance')
+      .select('*')
+      .gte('created_at', startISO)
+      .lte('created_at', endISO)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+
+    if (!punches || punches.length === 0) {
+      return res.json({ success: true, message: '今天沒有打卡記錄', autoClockOutCount: 0 });
+    }
+
+    // 依員工分組，找出每位員工今天的最後一筆
+    const lastPunchByUser = {};
+    punches.forEach(p => {
+      lastPunchByUser[p.user_id] = p; // 已排序，後面的會覆蓋，最後留下最後一筆
+    });
+
+    // 對「最後一筆是上班」的員工補下班
+    const toInsert = [];
+    for (const userId of Object.keys(lastPunchByUser)) {
+      const last = lastPunchByUser[userId];
+      if (last.type === 'clock_in') {
+        toInsert.push({
+          user_id: userId,
+          user_name: last.user_name,
+          type: 'clock_out',
+          // 沿用最後一次上班的座標與地點，方便後台檢視
+          latitude: last.latitude,
+          longitude: last.longitude,
+          distance_from_company: last.distance_from_company,
+          location_name: '系統自動下班',
+          created_at: autoClockOutISO
+        });
+      }
+    }
+
+    if (toInsert.length > 0) {
+      const { error: insertError } = await supabase
+        .from('attendance')
+        .insert(toInsert);
+      if (insertError) throw insertError;
+    }
+
+    return res.json({
+      success: true,
+      message: `已為 ${toInsert.length} 位忘記下班的員工自動補下班`,
+      autoClockOutCount: toInsert.length,
+      date: `${tw.y}/${tw.mo}/${tw.d}`
+    });
+
+  } catch (error) {
+    console.error('自動補下班錯誤:', error);
+    return res.status(500).json({ error: error.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
