@@ -522,7 +522,7 @@ app.get('/api/users', async (req, res) => {
 app.put('/api/users/:lineUserId', async (req, res) => {
   try {
     const { lineUserId } = req.params;
-    const { name, employee_no, department, phone, hire_date, is_active } = req.body;
+    const { name, employee_no, department, phone, hire_date, is_active, notes } = req.body;
 
     // 組合要更新的欄位（只更新有傳進來的）
     const updateData = { updated_at: new Date().toISOString() };
@@ -531,6 +531,7 @@ app.put('/api/users/:lineUserId', async (req, res) => {
     if (department !== undefined) updateData.department = department || null;
     if (phone !== undefined) updateData.phone = phone || null;
     if (hire_date !== undefined) updateData.hire_date = hire_date || null;
+    if (notes !== undefined) updateData.notes = notes || null;
     if (is_active !== undefined) updateData.is_active = is_active;
 
     const { data, error } = await supabase
