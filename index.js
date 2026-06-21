@@ -518,6 +518,44 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
+// 更新員工資料
+app.put('/api/users/:lineUserId', async (req, res) => {
+  try {
+    const { lineUserId } = req.params;
+    const { name, employee_no, department, phone, hire_date, is_active } = req.body;
+
+    // 組合要更新的欄位（只更新有傳進來的）
+    const updateData = { updated_at: new Date().toISOString() };
+    if (name !== undefined) updateData.name = name;
+    if (employee_no !== undefined) updateData.employee_no = employee_no || null;
+    if (department !== undefined) updateData.department = department || null;
+    if (phone !== undefined) updateData.phone = phone || null;
+    if (hire_date !== undefined) updateData.hire_date = hire_date || null;
+    if (is_active !== undefined) updateData.is_active = is_active;
+
+    const { data, error } = await supabase
+      .from('users')
+      .update(updateData)
+      .eq('line_user_id', lineUserId)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // 如果改了姓名，同步更新該員工過去的打卡記錄，讓後台顯示一致
+    if (name !== undefined) {
+      await supabase
+        .from('attendance')
+        .update({ user_name: name })
+        .eq('user_id', lineUserId);
+    }
+
+    res.json({ success: true, user: data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 取得出勤記錄
 app.get('/api/attendance', async (req, res) => {
   try {
