@@ -100,7 +100,7 @@ const COMPANY_LOCATIONS = [
     name: '北藝中心',
     lat: parseFloat(process.env.LOCATION6_LAT || '25.0846858'),
     lng: parseFloat(process.env.LOCATION6_LNG || '121.5211427'),
-    radiusMeters: parseInt(process.env.LOCATION6_RADIUS || '200')
+    radiusMeters: parseInt(process.env.LOCATION6_RADIUS || '400')
   },
   {
     name: '中正紀念堂',
