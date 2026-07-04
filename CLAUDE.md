@@ -19,10 +19,10 @@ core.md 內有完整路由表。速查：
 
 - 派便宜 subagent：用 Agent 工具，唯讀掃描用 Explore＋`model: haiku`；
   要寫檔的交辦用 general-purpose＋`model: sonnet`。範本全文放進 prompt。
-- 本 session 模型：`/model` 或 `--model`（`haiku`／`sonnet`／`opus`）；
-  effort：`/effort`（low／medium／high／xhigh／max）。
-- auto-memory（`~/.claude/projects/<專案>/memory/`）只當快取：
-  通用教訓要搬回正本 lessons.md，搬運規則見 05。
+- 本 session 模型：`/model` 或 `--model`（`haiku`／`sonnet`／`opus`；特例 `fable`，
+  完整表見 02）；effort：`/effort`（low／medium／high／xhigh／max）。
+- auto-memory 路徑：`~/.claude/projects/<專案>/memory/`；
+  定位與搬運規則見 core 規則 7 與 05。
 - 長對話會被自動壓縮：重要決策與「檔案:行號」隨做隨寫進任務卡檔案。
 
 ## 專案專屬區（line-attendance）

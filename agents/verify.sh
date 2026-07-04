@@ -2,7 +2,7 @@
 # 防漂移檢查：索引檔行數上限、路由指標存在、正本檔齊全。
 # 用法：bash agents/verify.sh   （在正本所在 repo 的根目錄或任意處執行皆可）
 set -u
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"  # -P：穿透 symlink 取實體路徑，否則經 ~/.agents symlink 呼叫時會解析錯誤
 INST="$ROOT/agents/institution"
 fail=0
 err() { echo "FAIL: $1"; fail=1; }
@@ -33,7 +33,10 @@ if [ "$core_lines" -le 150 ]; then ok "core.md 行數 $core_lines ≤150"; else 
 
 # 4. lessons.md 精簡門檻提醒（非失敗）
 lessons_lines=$(wc -l < "$INST/lessons.md")
-[ "$lessons_lines" -gt 300 ] && echo "WARN: lessons.md 已 $lessons_lines 行（>300），依 05 觸發精簡"
+lessons_entries=$(grep -c '^## ' "$INST/lessons.md" || true)
+if [ "$lessons_lines" -gt 300 ] || [ "$lessons_entries" -gt 40 ]; then
+  echo "WARN: lessons.md 已 $lessons_lines 行／$lessons_entries 條（門檻 300 行或 40 條），依 05 觸發精簡"
+fi
 
 # 5. 本機 symlink（若已安裝）
 if [ -L "$HOME/.agents/institution" ]; then

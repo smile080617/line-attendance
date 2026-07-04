@@ -13,8 +13,8 @@
 | 中階／主線預設 | `sonnet`（Sonnet 5，ID `claude-sonnet-5`） | `gpt-5.5` + `model_reasoning_effort="medium"` | 待使用者填寫 |
 | 頂級／升級用 | `opus`（Opus 4.8，ID `claude-opus-4-8`）；特例才用 `fable` | `gpt-5.5` + effort `high` 或 `xhigh` | 待使用者填寫 |
 | effort 參數值 | `low/medium/high/xhigh/max`（Sonnet 5 / Opus 4.8 / Fable 5） | GPT-5.5：`none/low/medium/high/xhigh`；mini：`minimal/low/medium/high` | 未確認 |
-| 顯式指定方式 | `/model`、`--model`、subagent frontmatter `model:`、Agent 呼叫的 model 參數 | `codex --model <id>`、session 內 `/model`、`~/.codex/config.toml` 的 `model=` | `hermes -m <model> --provider <p>`、`/model`（`--global` 持久化） |
-| subagent／平行 | 原生：`.claude/agents/*.md` 可設 `model: haiku` 等 | 有，但**只在明確要求時**生成：交辦句要寫「spawn a subagent using gpt-5.4-mini to …」 | `hermes kanban`／`hermes chat --worktree`／`hermes profile` |
+| 顯式指定方式 | `/model`、`--model`、subagent frontmatter `model:`、Agent 呼叫的 model 參數 | `codex --model <id>`、session 內 `/model`、`~/.codex/config.toml` 的 `model=` | ⚠未確認：`hermes -m <model> --provider <p>`、`/model`（`--global` 持久化） |
+| subagent／平行 | 原生：`.claude/agents/*.md` 可設 `model: haiku` 等 | 有，但**只在明確要求時**生成：交辦句要寫「spawn a subagent using gpt-5.4-mini to …」 | ⚠未確認：`hermes kanban`／`hermes chat --worktree`／`hermes profile` |
 
 查證備註（弱模型別自行推翻，也別照抄過期值）：
 - Codex：GPT-5.2-Codex／GPT-5.3-Codex 自 2026-06 起淘汰中，不要再指定。

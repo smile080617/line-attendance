@@ -18,11 +18,11 @@
 
 - 派便宜 subagent：Agent 工具；唯讀掃描 Explore＋`model: haiku`，
   要寫檔的交辦 general-purpose＋`model: sonnet`。
-- 模型與 effort：`/model`（haiku／sonnet／opus）、`/effort`（low～max）。
-- auto-memory 只當快取，通用教訓搬回正本 lessons.md（規則見 05）。
+- 模型與 effort：`/model`（haiku／sonnet／opus；特例 fable，完整表見 02）、`/effort`（low～max）。
+- auto-memory 路徑：`~/.claude/projects/<專案>/memory/`；定位與搬運規則見 core 規則 7 與 05。
 - 長對話會被壓縮：決策與「檔案:行號」隨做隨寫進任務卡檔案。
 
 ## 防漂移
 
-本檔上限 150 行；新規則一律寫正本。月檢：`bash ~/.agents/institution/../verify.sh`
-（即正本所在 repo 的 `agents/verify.sh`）。
+本檔上限 150 行；新規則一律寫正本。月檢：到正本所在 repo 執行 `bash agents/verify.sh`
+（不要經由 `~/.agents` symlink 加 `..` 呼叫——symlink 上的 `..` 不會回到 repo）。

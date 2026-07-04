@@ -5,8 +5,10 @@
 
 ## 開工第一步（必做）
 
-先讀 `agents/institution/core.md`（約 80 行，含十條非談判規則與完整路由表）。
+先讀 `agents/institution/core.md`（常載核心：十條非談判規則＋完整路由表）。
 沒讀 core.md 不要開始多步驟任務。
+（此強制句只寫在本檔：Claude 的 CLAUDE.md 用 `@import` 自動載入 core.md，不需要它；
+維護時不要為了「三檔統一」而刪掉這句——它是 Codex／Hermes 唯一的強制閘門。）
 
 ## 路由速查
 
@@ -22,8 +24,8 @@
 - subagent 不會自動出現，要明說：「Spawn a subagent using gpt-5.4-mini to …」。
   或另開低成本 session：`codex --model gpt-5.4-mini "＜交辦包全文＞"`。
 - effort 調整：config `model_reasoning_effort`、session 內 Alt+, / Alt+.。
-- Memories 若有啟用（`~/.codex/memory/`，路徑未經官方證實）只當快取，
-  通用教訓搬回正本 lessons.md（規則見 05）。
+- Memories 路徑（若啟用）：`~/.codex/memory/`（未經官方證實）；
+  其定位與搬運規則見 core 規則 7 與 05，此處不重述。
 
 ## Hermes Agent 專屬機制（暫定，身分未經使用者確認）
 
@@ -31,7 +33,7 @@
   若你是 Hermes 上的 session 且發現與實際不符：停，照 `agents/adapters/hermes-notes.md`
   的填寫指引修正本區塊（這是索引檔少數允許的修改，仍需先問使用者）。
 - 模型三檔位待使用者用 `hermes model` 確認後回填 `02-model-dispatch.md`。
-- `MEMORY.md`／`USER.md` 只當快取，通用教訓搬回正本 lessons.md。
+- 記憶檔：`MEMORY.md`／`USER.md`；定位與搬運規則見 core 規則 7 與 05。
 - 平行機制：`hermes kanban`／`hermes chat --worktree`／`hermes profile`。
 
 ## 專案專屬區（line-attendance）

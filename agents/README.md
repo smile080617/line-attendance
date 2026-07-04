@@ -23,6 +23,7 @@ repo 根目錄的 `CLAUDE.md` 與 `AGENTS.md` 是「repo 層」薄索引，
 ```bash
 # 1. 取得正本（本 repo 任一份最新 clone 即可）
 git clone https://github.com/smile080617/line-attendance ~/src/line-attendance  # 已有就 git pull
+# 若 clone 失敗：repo 可能是私有的，先確認本機已設定 GitHub SSH key 或 token，再重試
 
 # 2. 建 symlink：讓三個 harness 用同一路徑找到正本
 mkdir -p ~/.agents

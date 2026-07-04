@@ -5,8 +5,9 @@
 
 ## 開工第一步（必做）
 
-先讀 `~/.agents/institution/core.md`（約 80 行，十條非談判規則＋完整路由表）。
+先讀 `~/.agents/institution/core.md`（常載核心：十條非談判規則＋完整路由表）。
 沒讀 core.md 不要開始多步驟任務。
+（此強制句是 Codex 的強制閘門，Claude 端由 `@import` 取代；維護時勿為統一而刪。）
 
 ## 路由速查
 
@@ -21,7 +22,8 @@
   （已知會被上次 session 狀態覆蓋）。
 - subagent 要明說才會出現：「Spawn a subagent using gpt-5.4-mini to …」；
   或另開低成本 session：`codex --model gpt-5.4-mini "＜交辦包＞"`。
-- Memories（若啟用）只當快取，通用教訓搬回正本 lessons.md（規則見 05）。
+- Memories 路徑（若啟用）：`~/.codex/memory/`（未經官方證實）；
+  定位與搬運規則見 core 規則 7 與 05。
 
 ## 防漂移
 
