@@ -64,51 +64,85 @@ function fmtTWTimeSec(dateInput) {
   });
 }
 
-// 公司位置設定 - 支援多個地點
-const COMPANY_LOCATIONS = [
-  {
-    name: '民權總店',
-    lat: parseFloat(process.env.LOCATION1_LAT || '25.06334'),
-    lng: parseFloat(process.env.LOCATION1_LNG || '121.52144'),
-    radiusMeters: parseInt(process.env.LOCATION1_RADIUS || '200')
-  },
-  {
-    name: '松山分店',
-    lat: parseFloat(process.env.LOCATION2_LAT || '25.04913'),
-    lng: parseFloat(process.env.LOCATION2_LNG || '121.57901'),
-    radiusMeters: parseInt(process.env.LOCATION2_RADIUS || '300')
-  },
-  {
-    name: '宏匯百貨',
-    lat: parseFloat(process.env.LOCATION3_LAT || '25.05965'),
-    lng: parseFloat(process.env.LOCATION3_LNG || '121.44954'),
-    radiusMeters: parseInt(process.env.LOCATION3_RADIUS || '200')
-  },
-  {
-    name: '三創',
-    lat: parseFloat(process.env.LOCATION4_LAT || '25.04552'),
-    lng: parseFloat(process.env.LOCATION4_LNG || '121.53132'),
-    radiusMeters: parseInt(process.env.LOCATION4_RADIUS || '200')
-  },
-  {
-    name: '統一',
-    lat: parseFloat(process.env.LOCATION5_LAT || '25.04087'),
-    lng: parseFloat(process.env.LOCATION5_LNG || '121.56540'),
-    radiusMeters: parseInt(process.env.LOCATION5_RADIUS || '200')
-  },
-  {
-    name: '北藝中心',
-    lat: parseFloat(process.env.LOCATION6_LAT || '25.0846858'),
-    lng: parseFloat(process.env.LOCATION6_LNG || '121.5211427'),
-    radiusMeters: parseInt(process.env.LOCATION6_RADIUS || '400')
-  },
-  {
-    name: '中正紀念堂',
-    lat: parseFloat(process.env.LOCATION7_LAT || '25.034611'),
-    lng: parseFloat(process.env.LOCATION7_LNG || '121.52178'),
-    radiusMeters: parseInt(process.env.LOCATION7_RADIUS || '200')
-  }
+// 公司位置設定 - 動態讀取環境變數，支援任意數量地點
+// 每個地點用 LOCATION{N}_NAME / LOCATION{N}_LAT / LOCATION{N}_LNG / LOCATION{N}_RADIUS 設定
+// 沒設定環境變數時使用以下預設值
+const DEFAULT_LOCATIONS = [
+  { name: '民權總店',   lat: 25.06334,   lng: 121.52144,   radiusMeters: 200 },
+  { name: '松山分店',   lat: 25.04913,   lng: 121.57901,   radiusMeters: 300 },
+  { name: '宏匯百貨',   lat: 25.05965,   lng: 121.44954,   radiusMeters: 200 },
+  { name: '三創',       lat: 25.04552,   lng: 121.53132,   radiusMeters: 200 },
+  { name: '統一',       lat: 25.04087,   lng: 121.56540,   radiusMeters: 200 },
+  { name: '北藝中心',   lat: 25.0846858, lng: 121.5211427, radiusMeters: 200 },
+  { name: '中正紀念堂', lat: 25.034611,  lng: 121.52178,   radiusMeters: 200 }
 ];
+
+function loadLocations() {
+  const locations = [];
+  // 從 LOCATION1 開始逐一檢查環境變數，最多支援 50 個地點
+  for (let i = 1; i <= 50; i++) {
+    const lat = process.env[`LOCATION${i}_LAT`];
+    const lng = process.env[`LOCATION${i}_LNG`];
+    if (lat === undefined || lng === undefined) continue; // 沒設定就跳過這個編號
+
+    const defaultLoc = DEFAULT_LOCATIONS[i - 1] || {};
+    locations.push({
+      name: process.env[`LOCATION${i}_NAME`] || defaultLoc.name || `地點${i}`,
+      lat: parseFloat(lat),
+      lng: parseFloat(lng),
+      radiusMeters: parseInt(process.env[`LOCATION${i}_RADIUS`] || defaultLoc.radiusMeters || 200)
+    });
+  }
+  // 完全沒設定環境變數時，使用內建預設地點
+  return locations.length > 0 ? locations : DEFAULT_LOCATIONS;
+}
+
+const COMPANY_LOCATIONS = loadLocations();
+console.log(`📍 已載入 ${COMPANY_LOCATIONS.length} 個預設打卡地點:`, COMPANY_LOCATIONS.map(l => l.name).join('、'));
+
+// ===== 可自訂規則參數（預設值：環境變數 > 內建）=====
+const DEFAULT_MIN_WORK_MINUTES = parseInt(process.env.MIN_WORK_MINUTES || '60');
+const DEFAULT_AUTO_CLOCKOUT_TIME = process.env.AUTO_CLOCKOUT_TIME || '23:59';
+
+// 從資料庫讀取規則設定（沒有就用預設值）
+async function getRuleSettings() {
+  try {
+    const { data } = await supabase.from('settings').select('*');
+    const map = {};
+    (data || []).forEach(r => { map[r.key] = r.value; });
+    const minutes = parseInt(map.min_work_minutes);
+    return {
+      minWorkMinutes: (Number.isFinite(minutes) && minutes >= 0) ? minutes : DEFAULT_MIN_WORK_MINUTES,
+      autoClockoutTime: (map.auto_clockout_time && /^\d{1,2}:\d{2}$/.test(map.auto_clockout_time))
+        ? map.auto_clockout_time : DEFAULT_AUTO_CLOCKOUT_TIME
+    };
+  } catch (e) {
+    // settings 表不存在或讀取失敗時，退回預設值，系統照常運作
+    return { minWorkMinutes: DEFAULT_MIN_WORK_MINUTES, autoClockoutTime: DEFAULT_AUTO_CLOCKOUT_TIME };
+  }
+}
+
+// 從資料庫讀取啟用中的據點（資料庫沒有資料時退回環境變數/內建據點）
+async function getActiveLocations() {
+  try {
+    const { data } = await supabase
+      .from('locations')
+      .select('*')
+      .eq('is_active', true)
+      .order('created_at', { ascending: true });
+    if (data && data.length > 0) {
+      return data.map(l => ({
+        name: l.name,
+        lat: parseFloat(l.lat),
+        lng: parseFloat(l.lng),
+        radiusMeters: parseInt(l.radius_meters) || 200
+      }));
+    }
+  } catch (e) {
+    // locations 表不存在時退回預設
+  }
+  return COMPANY_LOCATIONS;
+}
 
 // 計算兩點之間的距離（公尺）
 function calculateDistance(lat1, lon1, lat2, lon2) {
@@ -127,12 +161,12 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 }
 
 // 驗證 GPS 位置 - 檢查是否在任一公司地點範圍內
-function isWithinCompanyLocation(latitude, longitude) {
+function isWithinCompanyLocation(latitude, longitude, locations) {
   let closestLocation = null;
   let minDistance = Infinity;
   
   // 檢查所有地點，找出最近的
-  for (const location of COMPANY_LOCATIONS) {
+  for (const location of locations) {
     const distance = calculateDistance(
       location.lat,
       location.lng,
@@ -159,8 +193,29 @@ function isWithinCompanyLocation(latitude, longitude) {
 // 處理打卡
 async function handleAttendance(userId, userName, type, latitude, longitude) {
   try {
+    // 先取得使用者資料（要檢查在職狀態，也要用後台設定的姓名）
+    const { data: user } = await supabase
+      .from('users')
+      .select('*')
+      .eq('line_user_id', userId)
+      .single();
+
+    // 離職/停用員工不能打卡
+    if (user && user.is_active === false) {
+      return {
+        success: false,
+        message: '❌ 無法打卡\n\n您的帳號已被停用\n如有疑問請聯繫管理員'
+      };
+    }
+
+    // 讀取目前的據點與規則設定（後台可即時修改）
+    const [activeLocations, ruleSettings] = await Promise.all([
+      getActiveLocations(),
+      getRuleSettings()
+    ]);
+
     // 驗證 GPS
-    const locationCheck = isWithinCompanyLocation(latitude, longitude);
+    const locationCheck = isWithinCompanyLocation(latitude, longitude, activeLocations);
     
     if (!locationCheck.valid) {
       return {
@@ -169,40 +224,42 @@ async function handleAttendance(userId, userName, type, latitude, longitude) {
       };
     }
 
-    // 新邏輯：如果是下班打卡，檢查最近一次上班打卡是否在1小時內
+    // 下班打卡：檢查「今天」最近一次上班是否已滿最低工作時間
     if (type === 'clock_out') {
-      const { data: lastClockIn } = await supabase
+      const tw = taiwanNowParts();
+      const { startISO, endISO } = taiwanDayRangeISO(tw.y, tw.mo, tw.d);
+
+      const { data: todayClockIns } = await supabase
         .from('attendance')
         .select('*')
         .eq('user_id', userId)
         .eq('type', 'clock_in')
+        .gte('created_at', startISO)
+        .lte('created_at', endISO)
         .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
+        .limit(1);
+
+      const lastClockIn = (todayClockIns && todayClockIns.length > 0) ? todayClockIns[0] : null;
 
       if (lastClockIn) {
         const lastClockInTime = new Date(lastClockIn.created_at);
         const now = new Date();
         const diffMinutes = Math.floor((now - lastClockInTime) / 1000 / 60);
 
-        if (diffMinutes < 60) {
+        if (diffMinutes < ruleSettings.minWorkMinutes) {
           return {
             success: false,
-            message: `⚠️ 下班打卡失敗\n\n您在 ${diffMinutes} 分鐘前剛上班打卡\n需要上班至少 1 小時後才能下班打卡\n\n還需要等待 ${60 - diffMinutes} 分鐘`
+            message: `⚠️ 下班打卡失敗\n\n您在 ${diffMinutes} 分鐘前剛上班打卡\n需要上班至少 ${ruleSettings.minWorkMinutes} 分鐘後才能下班打卡\n\n還需要等待 ${ruleSettings.minWorkMinutes - diffMinutes} 分鐘`
           };
         }
       }
     }
 
-    // 先確保使用者存在
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .select('*')
-      .eq('line_user_id', userId)
-      .single();
+    // 決定記錄用的姓名：優先用後台設定的姓名，其次才是 LINE 暱稱
+    const recordName = (user && user.name) ? user.name : (userName || '員工');
 
+    // 使用者不存在時建立（第一次打卡的新員工）
     if (!user) {
-      // 新增使用者
       await supabase
         .from('users')
         .insert([
@@ -214,13 +271,13 @@ async function handleAttendance(userId, userName, type, latitude, longitude) {
         ]);
     }
 
-    // 記錄打卡（新增地點名稱）
+    // 記錄打卡
     const { data, error } = await supabase
       .from('attendance')
       .insert([
         {
           user_id: userId,
-          user_name: userName || '員工',
+          user_name: recordName,
           type: type,
           latitude: latitude,
           longitude: longitude,
@@ -503,6 +560,22 @@ app.post('/webhook', line.middleware(lineConfig), async (req, res) => {
 app.use(cors());
 app.use(express.json());
 
+// ===== 後台 API 密碼保護 =====
+// 設定環境變數 ADMIN_PASSWORD 後，所有 /api/ 開頭的請求都要在
+// header 帶 x-admin-password 或 query 帶 ?password= 才能存取
+// （未設定 ADMIN_PASSWORD 時不驗證，方便初期測試，但強烈建議設定）
+function requireAdminAuth(req, res, next) {
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  if (!adminPassword) return next(); // 未設定就不驗證
+
+  const provided = req.headers['x-admin-password'] || req.query.password;
+  if (provided === adminPassword) return next();
+
+  return res.status(401).json({ error: 'unauthorized', message: '需要管理員密碼' });
+}
+
+app.use('/api', requireAdminAuth);
+
 // 取得所有員工列表
 app.get('/api/users', async (req, res) => {
   try {
@@ -580,6 +653,323 @@ app.get('/api/attendance', async (req, res) => {
   }
 });
 
+// 手動補卡（管理員在後台幫員工補打卡記錄）
+app.post('/api/attendance/manual', async (req, res) => {
+  try {
+    const { user_id, type, date, time } = req.body;
+    // date 格式 YYYY-MM-DD、time 格式 HH:MM（皆為台灣時間）
+
+    if (!user_id || !type || !date || !time) {
+      return res.status(400).json({ error: '缺少必要欄位 (user_id, type, date, time)' });
+    }
+    if (type !== 'clock_in' && type !== 'clock_out') {
+      return res.status(400).json({ error: 'type 必須是 clock_in 或 clock_out' });
+    }
+
+    const dateMatch = date.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    const timeMatch = time.match(/^(\d{1,2}):(\d{2})$/);
+    if (!dateMatch || !timeMatch) {
+      return res.status(400).json({ error: '日期或時間格式錯誤' });
+    }
+
+    // 取得員工姓名
+    const { data: user } = await supabase
+      .from('users')
+      .select('*')
+      .eq('line_user_id', user_id)
+      .single();
+
+    if (!user) {
+      return res.status(404).json({ error: '找不到該員工' });
+    }
+
+    const createdAtISO = taiwanToUTC(
+      parseInt(dateMatch[1]), parseInt(dateMatch[2]), parseInt(dateMatch[3]),
+      parseInt(timeMatch[1]), parseInt(timeMatch[2]), 0, 0
+    );
+
+    const { data, error } = await supabase
+      .from('attendance')
+      .insert([{
+        user_id: user_id,
+        user_name: user.name,
+        type: type,
+        latitude: 0,
+        longitude: 0,
+        distance_from_company: 0,
+        location_name: '管理員補卡',
+        created_at: createdAtISO
+      }])
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, record: data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 刪除打卡記錄（補錯時可以刪掉重補）
+app.delete('/api/attendance/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { error } = await supabase
+      .from('attendance')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 工時計算：指定月份，回傳每位員工每天的工時與月總工時
+app.get('/api/work-hours', async (req, res) => {
+  try {
+    const tw = taiwanNowParts();
+    const year = parseInt(req.query.year) || tw.y;
+    const month = parseInt(req.query.month) || tw.mo; // 1-12
+
+    const firstDay = taiwanToUTC(year, month, 1, 0, 0, 0, 0);
+    const lastDayDate = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const lastDay = taiwanToUTC(year, month, lastDayDate, 23, 59, 59, 999);
+
+    const { data: punches, error } = await supabase
+      .from('attendance')
+      .select('*')
+      .gte('created_at', firstDay)
+      .lte('created_at', lastDay)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+
+    // 依員工、依日期分組，然後配對上下班計算工時
+    // 配對規則：依時間順序，每個 clock_in 對應下一個 clock_out
+    const byUser = {};
+    (punches || []).forEach(p => {
+      if (!byUser[p.user_id]) byUser[p.user_id] = { user_name: p.user_name, byDate: {} };
+      byUser[p.user_id].user_name = p.user_name; // 用最新的名字
+      const dateKey = fmtTWDate(p.created_at);
+      if (!byUser[p.user_id].byDate[dateKey]) byUser[p.user_id].byDate[dateKey] = [];
+      byUser[p.user_id].byDate[dateKey].push(p);
+    });
+
+    const result = [];
+    for (const userId of Object.keys(byUser)) {
+      const { user_name, byDate } = byUser[userId];
+      const days = [];
+      let totalMinutes = 0;
+
+      for (const dateKey of Object.keys(byDate)) {
+        const dayPunches = byDate[dateKey]; // 已依時間排序
+        let dayMinutes = 0;
+        let pendingClockIn = null;
+        let hasAutoClockOut = false;
+
+        for (const p of dayPunches) {
+          if (p.type === 'clock_in') {
+            // 連續兩個上班：以較早那個為準（保守計算）
+            if (!pendingClockIn) pendingClockIn = p;
+          } else {
+            if (pendingClockIn) {
+              const mins = Math.floor((new Date(p.created_at) - new Date(pendingClockIn.created_at)) / 60000);
+              if (mins > 0) dayMinutes += mins;
+              pendingClockIn = null;
+            }
+            if (p.location_name === '系統自動下班') hasAutoClockOut = true;
+          }
+        }
+
+        totalMinutes += dayMinutes;
+        days.push({
+          date: dateKey,
+          minutes: dayMinutes,
+          hours: Math.round(dayMinutes / 60 * 10) / 10, // 小數1位
+          hasAutoClockOut: hasAutoClockOut,
+          incomplete: pendingClockIn !== null // 有上班沒下班（未配對）
+        });
+      }
+
+      result.push({
+        user_id: userId,
+        user_name: user_name,
+        total_minutes: totalMinutes,
+        total_hours: Math.round(totalMinutes / 60 * 10) / 10,
+        days: days
+      });
+    }
+
+    res.json({ year, month, employees: result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== 系統設定 API =====
+
+// 取得目前生效的設定
+app.get('/api/settings', async (req, res) => {
+  try {
+    const settings = await getRuleSettings();
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 更新設定（upsert 到 settings 表）
+app.put('/api/settings', async (req, res) => {
+  try {
+    const { minWorkMinutes, autoClockoutTime } = req.body;
+
+    const upserts = [];
+    if (minWorkMinutes !== undefined) {
+      const m = parseInt(minWorkMinutes);
+      if (!Number.isFinite(m) || m < 0 || m > 1440) {
+        return res.status(400).json({ error: '下班間隔須為 0-1440 的分鐘數' });
+      }
+      upserts.push({ key: 'min_work_minutes', value: String(m), updated_at: new Date().toISOString() });
+    }
+    if (autoClockoutTime !== undefined) {
+      if (!/^\d{1,2}:\d{2}$/.test(autoClockoutTime)) {
+        return res.status(400).json({ error: '自動下班時間格式須為 HH:MM' });
+      }
+      upserts.push({ key: 'auto_clockout_time', value: autoClockoutTime, updated_at: new Date().toISOString() });
+    }
+
+    if (upserts.length > 0) {
+      const { error } = await supabase
+        .from('settings')
+        .upsert(upserts, { onConflict: 'key' });
+      if (error) throw error;
+    }
+
+    const settings = await getRuleSettings();
+    res.json({ success: true, settings });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== 據點管理 API =====
+
+// 列出所有據點（含停用的），並標示目前是否使用資料庫據點
+app.get('/api/locations', async (req, res) => {
+  try {
+    let dbLocations = [];
+    try {
+      const { data } = await supabase
+        .from('locations')
+        .select('*')
+        .order('created_at', { ascending: true });
+      dbLocations = data || [];
+    } catch (e) { /* 表不存在 */ }
+
+    const usingDatabase = dbLocations.some(l => l.is_active);
+    res.json({
+      usingDatabase: usingDatabase,
+      locations: dbLocations,
+      // 資料庫沒有據點時，回傳目前生效的預設據點供匯入參考
+      fallbackLocations: usingDatabase ? [] : COMPANY_LOCATIONS
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 一鍵匯入預設據點到資料庫（僅在資料庫尚無據點時允許）
+app.post('/api/locations/import-defaults', async (req, res) => {
+  try {
+    const { data: existing } = await supabase.from('locations').select('id').limit(1);
+    if (existing && existing.length > 0) {
+      return res.status(400).json({ error: '資料庫已有據點，不可重複匯入' });
+    }
+
+    const rows = COMPANY_LOCATIONS.map(l => ({
+      name: l.name,
+      lat: l.lat,
+      lng: l.lng,
+      radius_meters: l.radiusMeters,
+      is_active: true
+    }));
+
+    const { error } = await supabase.from('locations').insert(rows);
+    if (error) throw error;
+    res.json({ success: true, imported: rows.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 新增據點
+app.post('/api/locations', async (req, res) => {
+  try {
+    const { name, lat, lng, radius_meters } = req.body;
+    if (!name || lat === undefined || lng === undefined) {
+      return res.status(400).json({ error: '缺少必要欄位 (name, lat, lng)' });
+    }
+    const latN = parseFloat(lat), lngN = parseFloat(lng);
+    if (!Number.isFinite(latN) || !Number.isFinite(lngN) || latN < -90 || latN > 90 || lngN < -180 || lngN > 180) {
+      return res.status(400).json({ error: '座標格式錯誤' });
+    }
+
+    const { data, error } = await supabase
+      .from('locations')
+      .insert([{
+        name: name,
+        lat: latN,
+        lng: lngN,
+        radius_meters: parseInt(radius_meters) || 200,
+        is_active: true
+      }])
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, location: data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 更新據點（含啟用/停用）
+app.put('/api/locations/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, lat, lng, radius_meters, is_active } = req.body;
+
+    const updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (lat !== undefined) {
+      const latN = parseFloat(lat);
+      if (!Number.isFinite(latN) || latN < -90 || latN > 90) return res.status(400).json({ error: '緯度格式錯誤' });
+      updateData.lat = latN;
+    }
+    if (lng !== undefined) {
+      const lngN = parseFloat(lng);
+      if (!Number.isFinite(lngN) || lngN < -180 || lngN > 180) return res.status(400).json({ error: '經度格式錯誤' });
+      updateData.lng = lngN;
+    }
+    if (radius_meters !== undefined) updateData.radius_meters = parseInt(radius_meters) || 200;
+    if (is_active !== undefined) updateData.is_active = is_active;
+
+    const { data, error } = await supabase
+      .from('locations')
+      .update(updateData)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, location: data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 健康檢查
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -599,8 +989,12 @@ app.get('/cron/auto-clockout', async (req, res) => {
     // 台灣的今天
     const tw = taiwanNowParts();
     const { startISO, endISO } = taiwanDayRangeISO(tw.y, tw.mo, tw.d);
-    // 自動下班的時間記為今天台灣 23:59:00
-    const autoClockOutISO = taiwanToUTC(tw.y, tw.mo, tw.d, 23, 59, 0, 0);
+    // 自動下班時間（後台可設定，格式 HH:MM，預設 23:59）
+    const ruleSettings = await getRuleSettings();
+    const timeMatch = ruleSettings.autoClockoutTime.match(/^(\d{1,2}):(\d{2})$/);
+    const autoHH = timeMatch ? parseInt(timeMatch[1], 10) : 23;
+    const autoMM = timeMatch ? parseInt(timeMatch[2], 10) : 59;
+    const autoClockOutISO = taiwanToUTC(tw.y, tw.mo, tw.d, autoHH, autoMM, 0, 0);
 
     // 取出今天所有打卡，依時間排序
     const { data: punches, error } = await supabase
@@ -617,16 +1011,21 @@ app.get('/cron/auto-clockout', async (req, res) => {
     }
 
     // 依員工分組，找出每位員工今天的最後一筆
+    // 同時記錄今天已被系統補過下班的員工（防止排程重複觸發時補兩次）
     const lastPunchByUser = {};
+    const alreadyAutoClocked = new Set();
     punches.forEach(p => {
       lastPunchByUser[p.user_id] = p; // 已排序，後面的會覆蓋，最後留下最後一筆
+      if (p.location_name === '系統自動下班') {
+        alreadyAutoClocked.add(p.user_id);
+      }
     });
 
-    // 對「最後一筆是上班」的員工補下班
+    // 對「最後一筆是上班」且「今天還沒被自動補過」的員工補下班
     const toInsert = [];
     for (const userId of Object.keys(lastPunchByUser)) {
       const last = lastPunchByUser[userId];
-      if (last.type === 'clock_in') {
+      if (last.type === 'clock_in' && !alreadyAutoClocked.has(userId)) {
         toInsert.push({
           user_id: userId,
           user_name: last.user_name,
