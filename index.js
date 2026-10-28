@@ -726,83 +726,88 @@ app.delete('/api/attendance/:id', async (req, res) => {
   }
 });
 
+// 工時計算核心（後台與 Agent API 共用同一套規則）
+// 配對規則：同日依時間排序，每個上班配下一個下班；連續兩個上班取較早者；孤立的下班忽略
+async function computeWorkHours(year, month) {
+  const firstDay = taiwanToUTC(year, month, 1, 0, 0, 0, 0);
+  const lastDayDate = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const lastDay = taiwanToUTC(year, month, lastDayDate, 23, 59, 59, 999);
+
+  const { data: punches, error } = await supabase
+    .from('attendance')
+    .select('*')
+    .gte('created_at', firstDay)
+    .lte('created_at', lastDay)
+    .order('created_at', { ascending: true });
+
+  if (error) throw error;
+
+  // 依員工、依日期分組，然後配對上下班計算工時
+  // 配對規則：依時間順序，每個 clock_in 對應下一個 clock_out
+  const byUser = {};
+  (punches || []).forEach(p => {
+    if (!byUser[p.user_id]) byUser[p.user_id] = { user_name: p.user_name, byDate: {} };
+    byUser[p.user_id].user_name = p.user_name; // 用最新的名字
+    const dateKey = fmtTWDate(p.created_at);
+    if (!byUser[p.user_id].byDate[dateKey]) byUser[p.user_id].byDate[dateKey] = [];
+    byUser[p.user_id].byDate[dateKey].push(p);
+  });
+
+  const result = [];
+  for (const userId of Object.keys(byUser)) {
+    const { user_name, byDate } = byUser[userId];
+    const days = [];
+    let totalMinutes = 0;
+
+    for (const dateKey of Object.keys(byDate)) {
+      const dayPunches = byDate[dateKey]; // 已依時間排序
+      let dayMinutes = 0;
+      let pendingClockIn = null;
+      let hasAutoClockOut = false;
+
+      for (const p of dayPunches) {
+        if (p.type === 'clock_in') {
+          // 連續兩個上班：以較早那個為準（保守計算）
+          if (!pendingClockIn) pendingClockIn = p;
+        } else {
+          if (pendingClockIn) {
+            const mins = Math.floor((new Date(p.created_at) - new Date(pendingClockIn.created_at)) / 60000);
+            if (mins > 0) dayMinutes += mins;
+            pendingClockIn = null;
+          }
+          if (p.location_name === '系統自動下班') hasAutoClockOut = true;
+        }
+      }
+
+      totalMinutes += dayMinutes;
+      days.push({
+        date: dateKey,
+        minutes: dayMinutes,
+        hours: Math.round(dayMinutes / 60 * 10) / 10, // 小數1位
+        hasAutoClockOut: hasAutoClockOut,
+        incomplete: pendingClockIn !== null // 有上班沒下班（未配對）
+      });
+    }
+
+    result.push({
+      user_id: userId,
+      user_name: user_name,
+      total_minutes: totalMinutes,
+      total_hours: Math.round(totalMinutes / 60 * 10) / 10,
+      days: days
+    });
+  }
+
+  return { year, month, employees: result };
+}
+
 // 工時計算：指定月份，回傳每位員工每天的工時與月總工時
 app.get('/api/work-hours', async (req, res) => {
   try {
     const tw = taiwanNowParts();
     const year = parseInt(req.query.year) || tw.y;
     const month = parseInt(req.query.month) || tw.mo; // 1-12
-
-    const firstDay = taiwanToUTC(year, month, 1, 0, 0, 0, 0);
-    const lastDayDate = new Date(Date.UTC(year, month, 0)).getUTCDate();
-    const lastDay = taiwanToUTC(year, month, lastDayDate, 23, 59, 59, 999);
-
-    const { data: punches, error } = await supabase
-      .from('attendance')
-      .select('*')
-      .gte('created_at', firstDay)
-      .lte('created_at', lastDay)
-      .order('created_at', { ascending: true });
-
-    if (error) throw error;
-
-    // 依員工、依日期分組，然後配對上下班計算工時
-    // 配對規則：依時間順序，每個 clock_in 對應下一個 clock_out
-    const byUser = {};
-    (punches || []).forEach(p => {
-      if (!byUser[p.user_id]) byUser[p.user_id] = { user_name: p.user_name, byDate: {} };
-      byUser[p.user_id].user_name = p.user_name; // 用最新的名字
-      const dateKey = fmtTWDate(p.created_at);
-      if (!byUser[p.user_id].byDate[dateKey]) byUser[p.user_id].byDate[dateKey] = [];
-      byUser[p.user_id].byDate[dateKey].push(p);
-    });
-
-    const result = [];
-    for (const userId of Object.keys(byUser)) {
-      const { user_name, byDate } = byUser[userId];
-      const days = [];
-      let totalMinutes = 0;
-
-      for (const dateKey of Object.keys(byDate)) {
-        const dayPunches = byDate[dateKey]; // 已依時間排序
-        let dayMinutes = 0;
-        let pendingClockIn = null;
-        let hasAutoClockOut = false;
-
-        for (const p of dayPunches) {
-          if (p.type === 'clock_in') {
-            // 連續兩個上班：以較早那個為準（保守計算）
-            if (!pendingClockIn) pendingClockIn = p;
-          } else {
-            if (pendingClockIn) {
-              const mins = Math.floor((new Date(p.created_at) - new Date(pendingClockIn.created_at)) / 60000);
-              if (mins > 0) dayMinutes += mins;
-              pendingClockIn = null;
-            }
-            if (p.location_name === '系統自動下班') hasAutoClockOut = true;
-          }
-        }
-
-        totalMinutes += dayMinutes;
-        days.push({
-          date: dateKey,
-          minutes: dayMinutes,
-          hours: Math.round(dayMinutes / 60 * 10) / 10, // 小數1位
-          hasAutoClockOut: hasAutoClockOut,
-          incomplete: pendingClockIn !== null // 有上班沒下班（未配對）
-        });
-      }
-
-      result.push({
-        user_id: userId,
-        user_name: user_name,
-        total_minutes: totalMinutes,
-        total_hours: Math.round(totalMinutes / 60 * 10) / 10,
-        days: days
-      });
-    }
-
-    res.json({ year, month, employees: result });
+    res.json(await computeWorkHours(year, month));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -969,6 +974,328 @@ app.put('/api/locations/:id', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// =====================================================
+// AI Agent 專用 API（/agent/v1/...）
+// - 用獨立的 AGENT_API_KEY，不共用後台密碼，外洩時可單獨更換
+// - 只能讀取，不能修改任何資料
+// - 沒設定 AGENT_API_KEY 時整組關閉（不會像早期後台那樣不設密碼就全開放）
+// - 預設不回傳員工電話與備註；要給 Agent 看需設 AGENT_INCLUDE_PRIVATE=true
+// - 時間一律附台灣時間字串，Agent 不用自己換算時區
+// =====================================================
+const crypto = require('crypto');
+
+// 台灣時間字串：YYYY-MM-DD HH:mm
+function fmtTWDateTime(dateInput) {
+  const t = new Date(new Date(dateInput).getTime() + TW_OFFSET_MS);
+  const p = n => String(n).padStart(2, '0');
+  return `${t.getUTCFullYear()}-${p(t.getUTCMonth() + 1)}-${p(t.getUTCDate())} ${p(t.getUTCHours())}:${p(t.getUTCMinutes())}`;
+}
+// 台灣日期字串：YYYY-MM-DD
+function fmtTWDateISO(dateInput) {
+  return fmtTWDateTime(dateInput).slice(0, 10);
+}
+function todayTWISO() {
+  const tw = taiwanNowParts();
+  return `${tw.y}-${String(tw.mo).padStart(2, '0')}-${String(tw.d).padStart(2, '0')}`;
+}
+function parseDateISO(s) {
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s || '');
+  if (!m) return null;
+  return { y: parseInt(m[1], 10), mo: parseInt(m[2], 10), d: parseInt(m[3], 10) };
+}
+
+// 把資料庫的一筆打卡整理成 Agent 好讀的格式
+function toAgentPunch(p) {
+  let source = 'line';
+  if (p.location_name === '系統自動下班') source = 'auto_clockout';
+  else if (p.location_name === '管理員補卡') source = 'manual';
+  return {
+    id: p.id,
+    employee_id: p.user_id,
+    employee_name: p.user_name,
+    type: p.type, // clock_in | clock_out
+    type_label: p.type === 'clock_in' ? '上班' : '下班',
+    time_tw: fmtTWDateTime(p.created_at),
+    date_tw: fmtTWDateISO(p.created_at),
+    time_utc: new Date(p.created_at).toISOString(),
+    location: p.location_name,
+    distance_m: p.distance_from_company,
+    source: source // line=員工打卡 / auto_clockout=系統自動下班 / manual=管理員補卡
+  };
+}
+
+// 簡易速率限制：每分鐘最多 60 次，防止 Agent 程式寫錯無限迴圈
+const agentRate = { windowStart: 0, count: 0 };
+const AGENT_RATE_LIMIT = 60;
+
+function requireAgentKey(req, res, next) {
+  const key = process.env.AGENT_API_KEY;
+  if (!key) {
+    return res.status(503).json({ error: 'agent_api_disabled', message: '尚未設定 AGENT_API_KEY，Agent API 未啟用' });
+  }
+
+  const auth = req.headers['authorization'] || '';
+  const provided = auth.startsWith('Bearer ') ? auth.slice(7).trim() : (req.headers['x-api-key'] || '');
+  const a = Buffer.from(String(provided));
+  const b = Buffer.from(key);
+  // 用固定時間比對，避免被逐字元猜金鑰
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(401).json({ error: 'unauthorized', message: 'API Key 錯誤或未提供' });
+  }
+
+  const now = Date.now();
+  if (now - agentRate.windowStart > 60000) { agentRate.windowStart = now; agentRate.count = 0; }
+  agentRate.count++;
+  if (agentRate.count > AGENT_RATE_LIMIT) {
+    return res.status(429).json({ error: 'rate_limited', message: '請求太頻繁，每分鐘最多 60 次' });
+  }
+
+  console.log(`🤖 Agent API: ${req.method} ${req.path}`);
+  next();
+}
+
+// API 規格說明（不含任何資料，免金鑰，讓 Agent 自己讀懂怎麼呼叫）
+app.get('/agent/v1/openapi.json', (req, res) => {
+  res.json(AGENT_OPENAPI_SPEC);
+});
+
+app.use('/agent/v1', requireAgentKey);
+
+// 1. 今日即時狀況：誰在上班、在哪個據點
+app.get('/agent/v1/today', async (req, res) => {
+  try {
+    const tw = taiwanNowParts();
+    const { startISO, endISO } = taiwanDayRangeISO(tw.y, tw.mo, tw.d);
+    const { data, error } = await supabase
+      .from('attendance').select('*')
+      .gte('created_at', startISO).lte('created_at', endISO)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+
+    const lastByUser = {};
+    (data || []).forEach(p => { lastByUser[p.user_id] = p; });
+
+    const onDuty = [], offDuty = [];
+    Object.values(lastByUser).forEach(p => {
+      const item = { employee_id: p.user_id, employee_name: p.user_name, location: p.location_name, since_tw: fmtTWDateTime(p.created_at) };
+      (p.type === 'clock_in' ? onDuty : offDuty).push(item);
+    });
+
+    const byLocation = {};
+    onDuty.forEach(e => { byLocation[e.location] = (byLocation[e.location] || 0) + 1; });
+
+    res.json({
+      date_tw: todayTWISO(),
+      now_tw: fmtTWDateTime(Date.now()),
+      on_duty_count: onDuty.length,
+      on_duty: onDuty,
+      on_duty_by_location: byLocation,
+      clocked_out_today: offDuty,
+      punches_today: (data || []).length
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 2. 打卡明細：?from=YYYY-MM-DD&to=YYYY-MM-DD&employee_id=xxx（台灣日期，最多 62 天）
+app.get('/agent/v1/attendance', async (req, res) => {
+  try {
+    const fromStr = req.query.from || todayTWISO();
+    const toStr = req.query.to || fromStr;
+    const from = parseDateISO(fromStr);
+    const to = parseDateISO(toStr);
+    if (!from || !to) return res.status(400).json({ error: '日期格式須為 YYYY-MM-DD' });
+
+    const startISO = taiwanToUTC(from.y, from.mo, from.d, 0, 0, 0, 0);
+    const endISO = taiwanToUTC(to.y, to.mo, to.d, 23, 59, 59, 999);
+    if (endISO < startISO) return res.status(400).json({ error: 'to 不可早於 from' });
+    if ((new Date(endISO) - new Date(startISO)) / 86400000 > 62) {
+      return res.status(400).json({ error: '查詢區間最多 62 天' });
+    }
+
+    let query = supabase.from('attendance').select('*')
+      .gte('created_at', startISO).lte('created_at', endISO)
+      .order('created_at', { ascending: true });
+    if (req.query.employee_id) query = query.eq('user_id', req.query.employee_id);
+
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json({ from: fromStr, to: toStr, count: (data || []).length, punches: (data || []).map(toAgentPunch) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 3. 月工時（與後台工時統計同一套算法）：?year=2026&month=10
+app.get('/agent/v1/work-hours', async (req, res) => {
+  try {
+    const tw = taiwanNowParts();
+    const year = parseInt(req.query.year) || tw.y;
+    const month = parseInt(req.query.month) || tw.mo;
+    if (month < 1 || month > 12) return res.status(400).json({ error: 'month 須為 1-12' });
+
+    const result = await computeWorkHours(year, month);
+    if (req.query.employee_id) {
+      result.employees = result.employees.filter(e => e.user_id === req.query.employee_id);
+    }
+    res.json({
+      year: result.year,
+      month: result.month,
+      note: '工時以同日上下班配對計算；has_auto_clockout=當天被系統自動補下班（工時可能偏高）；incomplete=有上班沒下班（該段未計入）',
+      employees: result.employees.map(e => ({
+        employee_id: e.user_id,
+        employee_name: e.user_name,
+        total_hours: e.total_hours,
+        total_minutes: e.total_minutes,
+        days_worked: e.days.length,
+        auto_clockout_days: e.days.filter(d => d.hasAutoClockOut).length,
+        incomplete_days: e.days.filter(d => d.incomplete).length,
+        days: e.days.map(d => ({ date: d.date.split('/').map((x, i) => i ? x.padStart(2, '0') : x).join('-'), hours: d.hours, minutes: d.minutes, has_auto_clockout: d.hasAutoClockOut, incomplete: d.incomplete }))
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 4. 異常清單：需要人工確認的記錄 ?from=&to=（預設最近 7 天）
+app.get('/agent/v1/anomalies', async (req, res) => {
+  try {
+    const toD = parseDateISO(req.query.to || todayTWISO());
+    if (!toD) return res.status(400).json({ error: '日期格式須為 YYYY-MM-DD' });
+    let fromD = parseDateISO(req.query.from || '');
+    if (!fromD) {
+      const back = new Date(Date.UTC(toD.y, toD.mo - 1, toD.d - 6));
+      fromD = { y: back.getUTCFullYear(), mo: back.getUTCMonth() + 1, d: back.getUTCDate() };
+    }
+
+    const startISO = taiwanToUTC(fromD.y, fromD.mo, fromD.d, 0, 0, 0, 0);
+    const endISO = taiwanToUTC(toD.y, toD.mo, toD.d, 23, 59, 59, 999);
+    if ((new Date(endISO) - new Date(startISO)) / 86400000 > 62) {
+      return res.status(400).json({ error: '查詢區間最多 62 天' });
+    }
+
+    const { data, error } = await supabase.from('attendance').select('*')
+      .gte('created_at', startISO).lte('created_at', endISO)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+
+    const anomalies = findAnomalies(data || [], todayTWISO());
+    res.json({ count: anomalies.length, anomalies });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 異常判斷（獨立成函數方便測試）
+function findAnomalies(punches, todayISO) {
+  const groups = {};
+  punches.forEach(p => {
+    const k = `${p.user_id}|${fmtTWDateISO(p.created_at)}`;
+    (groups[k] = groups[k] || []).push(p);
+  });
+
+  const anomalies = [];
+  Object.values(groups).forEach(list => {
+    const first = list[0];
+    const base = { employee_id: first.user_id, employee_name: first.user_name, date: fmtTWDateISO(first.created_at) };
+    list.forEach(p => {
+      if (p.location_name === '系統自動下班') anomalies.push({ ...base, kind: 'auto_clockout', message: '忘記打下班卡，系統自動補下班，實際下班時間需確認', time_tw: fmtTWDateTime(p.created_at) });
+      if (p.location_name === '管理員補卡') anomalies.push({ ...base, kind: 'manual_punch', message: '管理員補卡', time_tw: fmtTWDateTime(p.created_at) });
+    });
+    // 今天還沒結束，只有上班是正常的；過去的日子才算異常
+    const last = list[list.length - 1];
+    if (last.type === 'clock_in' && base.date !== todayISO) {
+      anomalies.push({ ...base, kind: 'missing_clockout', message: '只有上班沒有下班', time_tw: fmtTWDateTime(last.created_at) });
+    }
+  });
+  return anomalies;
+}
+
+// 5. 員工名單：?active=true 只列在職
+app.get('/agent/v1/employees', async (req, res) => {
+  try {
+    let query = supabase.from('users').select('*').order('created_at', { ascending: true });
+    if (req.query.active === 'true') query = query.eq('is_active', true);
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const includePrivate = process.env.AGENT_INCLUDE_PRIVATE === 'true';
+    res.json({
+      count: (data || []).length,
+      employees: (data || []).map(u => {
+        const item = {
+          employee_id: u.line_user_id,
+          name: u.name,
+          employee_no: u.employee_no || null,
+          department: u.department || null,
+          hire_date: u.hire_date || null,
+          is_active: u.is_active !== false
+        };
+        if (includePrivate) { item.phone = u.phone || null; item.notes = u.notes || null; }
+        return item;
+      })
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 6. 據點與打卡規則
+app.get('/agent/v1/locations', async (req, res) => {
+  try {
+    const [locations, rules] = await Promise.all([getActiveLocations(), getRuleSettings()]);
+    res.json({
+      locations: locations.map(l => ({ name: l.name, lat: l.lat, lng: l.lng, radius_m: l.radiusMeters })),
+      rules: { min_work_minutes: rules.minWorkMinutes, auto_clockout_time: rules.autoClockoutTime }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Agent API 的 OpenAPI 規格（給 Agent 讀的說明書）
+const AGENT_OPENAPI_SPEC = {
+  openapi: '3.0.3',
+  info: {
+    title: '小安狗掌燒 員工打卡 Agent API',
+    version: '1.0.0',
+    description: '唯讀 API。所有時間附台灣時間（UTC+8）字串 *_tw。認證：Header「Authorization: Bearer <AGENT_API_KEY>」。每分鐘最多 60 次。Render 免費版休眠時第一次呼叫可能需等 30-60 秒。'
+  },
+  servers: [{ url: 'https://line-attendance-api.onrender.com' }],
+  components: { securitySchemes: { bearer: { type: 'http', scheme: 'bearer' } } },
+  security: [{ bearer: [] }],
+  paths: {
+    '/agent/v1/today': { get: { summary: '今日即時狀況：目前誰在上班、各據點人數、今天已下班的人', operationId: 'getToday', responses: { 200: { description: 'OK' } } } },
+    '/agent/v1/attendance': { get: {
+      summary: '打卡明細（台灣日期區間，最多 62 天）', operationId: 'getAttendance',
+      parameters: [
+        { name: 'from', in: 'query', schema: { type: 'string', example: '2026-10-01' }, description: '起始日 YYYY-MM-DD，預設今天' },
+        { name: 'to', in: 'query', schema: { type: 'string', example: '2026-10-31' }, description: '結束日 YYYY-MM-DD，預設同 from' },
+        { name: 'employee_id', in: 'query', schema: { type: 'string' }, description: '只看某位員工（employee_id 從 /employees 取得）' }
+      ], responses: { 200: { description: 'OK' } } } },
+    '/agent/v1/work-hours': { get: {
+      summary: '月工時統計（每人月總工時、每日工時、自動下班天數、未完成天數）', operationId: 'getWorkHours',
+      parameters: [
+        { name: 'year', in: 'query', schema: { type: 'integer', example: 2026 } },
+        { name: 'month', in: 'query', schema: { type: 'integer', example: 10 } },
+        { name: 'employee_id', in: 'query', schema: { type: 'string' } }
+      ], responses: { 200: { description: 'OK' } } } },
+    '/agent/v1/anomalies': { get: {
+      summary: '需人工確認的異常：系統自動下班、管理員補卡、只有上班沒下班（預設最近 7 天）', operationId: 'getAnomalies',
+      parameters: [
+        { name: 'from', in: 'query', schema: { type: 'string' } },
+        { name: 'to', in: 'query', schema: { type: 'string' } }
+      ], responses: { 200: { description: 'OK' } } } },
+    '/agent/v1/employees': { get: {
+      summary: '員工名單（預設不含電話與備註）', operationId: 'getEmployees',
+      parameters: [{ name: 'active', in: 'query', schema: { type: 'string', enum: ['true'] }, description: 'true=只列在職員工' }],
+      responses: { 200: { description: 'OK' } } } },
+    '/agent/v1/locations': { get: { summary: '啟用中的打卡據點與目前打卡規則', operationId: 'getLocations', responses: { 200: { description: 'OK' } } } }
+  }
+};
 
 // 健康檢查
 app.get('/health', (req, res) => {
