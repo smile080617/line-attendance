@@ -714,13 +714,95 @@ app.post('/api/attendance/manual', async (req, res) => {
 app.delete('/api/attendance/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('attendance')
       .delete()
-      .eq('id', id);
+      .eq('id', id)
+      .select();
 
     if (error) throw error;
-    res.json({ success: true });
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: '找不到這筆記錄（可能已被刪除）' });
+    }
+
+    // 在 Render Logs 留下被刪除的內容，誤刪時可以照著手動補回
+    const d = data[0];
+    console.log(`🗑️ 管理員刪除打卡：${d.user_name} ${d.type === 'clock_in' ? '上班' : '下班'} ${fmtTWDateTime(d.created_at)} ${d.location_name || ''} (id=${d.id})`);
+
+    res.json({ success: true, deleted: d });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 修改打卡記錄：可改上班/下班、日期、時間、據點
+// body: { type?, date?: 'YYYY-MM-DD', time?: 'HH:MM', location_name? }（日期時間皆為台灣時間）
+app.put('/api/attendance/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { type, date, time, location_name } = req.body;
+
+    const { data: existing, error: findError } = await supabase
+      .from('attendance').select('*').eq('id', id).single();
+    if (findError || !existing) {
+      return res.status(404).json({ error: '找不到這筆記錄（可能已被刪除）' });
+    }
+
+    const updateData = {};
+
+    if (type !== undefined) {
+      if (type !== 'clock_in' && type !== 'clock_out') {
+        return res.status(400).json({ error: 'type 必須是 clock_in 或 clock_out' });
+      }
+      updateData.type = type;
+    }
+
+    if (date !== undefined || time !== undefined) {
+      // 只改其中一個時，另一個沿用原本的值
+      const original = fmtTWDateTime(existing.created_at); // 'YYYY-MM-DD HH:mm'
+      const useDate = date || original.slice(0, 10);
+      const useTime = time || original.slice(11, 16);
+      const dm = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(useDate);
+      const tm = /^(\d{1,2}):(\d{2})$/.exec(useTime);
+      if (!dm || !tm || parseInt(tm[1]) > 23 || parseInt(tm[2]) > 59) {
+        return res.status(400).json({ error: '日期或時間格式錯誤' });
+      }
+      updateData.created_at = taiwanToUTC(
+        parseInt(dm[1]), parseInt(dm[2]), parseInt(dm[3]),
+        parseInt(tm[1]), parseInt(tm[2]), 0, 0
+      );
+    }
+
+    if (location_name !== undefined && String(location_name).trim() !== '') {
+      updateData.location_name = String(location_name).trim();
+    } else if (existing.location_name === '系統自動下班') {
+      // 修正過的自動下班記錄，不再算成「需要確認的異常」
+      updateData.location_name = '管理員修正';
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ error: '沒有要修改的內容' });
+    }
+
+    // 修改紀錄：保留「最初」的原始內容，改幾次都看得到原本是什麼
+    const originalNote = `原：${existing.type === 'clock_in' ? '上班' : '下班'} ${fmtTWDateTime(existing.created_at)}（${existing.location_name || '未記錄'}）`;
+    const auditData = {
+      edited_at: new Date().toISOString(),
+      edit_note: existing.edit_note || originalNote
+    };
+
+    let result = await supabase.from('attendance')
+      .update({ ...updateData, ...auditData }).eq('id', id).select().single();
+
+    // 資料庫還沒加 edited_at / edit_note 欄位時，改為不記修改紀錄，修改照樣生效
+    if (result.error && /edited_at|edit_note/.test(result.error.message || '')) {
+      result = await supabase.from('attendance')
+        .update(updateData).eq('id', id).select().single();
+    }
+    if (result.error) throw result.error;
+
+    console.log(`✏️ 管理員修改打卡：${existing.user_name} ${originalNote} → ${result.data.type === 'clock_in' ? '上班' : '下班'} ${fmtTWDateTime(result.data.created_at)}（${result.data.location_name || ''}）`);
+    res.json({ success: true, record: result.data });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1010,6 +1092,7 @@ function toAgentPunch(p) {
   let source = 'line';
   if (p.location_name === '系統自動下班') source = 'auto_clockout';
   else if (p.location_name === '管理員補卡') source = 'manual';
+  else if (p.location_name === '管理員修正') source = 'edited';
   return {
     id: p.id,
     employee_id: p.user_id,
@@ -1021,7 +1104,9 @@ function toAgentPunch(p) {
     time_utc: new Date(p.created_at).toISOString(),
     location: p.location_name,
     distance_m: p.distance_from_company,
-    source: source // line=員工打卡 / auto_clockout=系統自動下班 / manual=管理員補卡
+    source: source, // line=員工打卡 / auto_clockout=系統自動下班 / manual=管理員補卡 / edited=修正過的自動下班
+    edited: !!p.edited_at,           // 是否被管理員修改過
+    edit_note: p.edit_note || null   // 修改前的原始內容
   };
 }
 
